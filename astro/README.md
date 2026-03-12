@@ -26,6 +26,33 @@ npm run eval:light
 npm run eval:heavy
 ```
 
+Run resumable random evaluation with chunk summaries and cursor state:
+
+```bash
+node src/cli/eval-random-cairo-engine.js \
+  --engine v5 \
+  --points 100000 \
+  --seed 20260310 \
+  --include-passes false \
+  --summary-file evals/v5-random-summary.ndjson \
+  --state-file evals/v5-random-state.json \
+  --mismatch-file evals/v5-random-mismatches.ndjson
+```
+
+Resume the same run later:
+
+```bash
+node src/cli/eval-random-cairo-engine.js \
+  --engine v5 \
+  --points 100000 \
+  --seed 20260310 \
+  --include-passes false \
+  --summary-file evals/v5-random-summary.ndjson \
+  --state-file evals/v5-random-state.json \
+  --mismatch-file evals/v5-random-mismatches.ndjson \
+  --resume true
+```
+
 Compare generated Cairo v5 tests against oracle signs:
 
 ```bash

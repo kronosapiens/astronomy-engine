@@ -26,6 +26,7 @@ Game, NFT, client, and presentation-layer material from the earlier import has b
 - [`cairo/crates/README.md`](./cairo/crates/README.md)
 - [`spec/CHART.md`](./spec/CHART.md)
 - [`spec/CHART_PLAN.md`](./spec/CHART_PLAN.md)
+- [`spec/EVALS.md`](./spec/EVALS.md)
 - [`spec/ASTROLOGY.md`](./spec/ASTROLOGY.md)
 
 ## Verification

@@ -1,11 +1,22 @@
 #!/usr/bin/env node
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parseArgs, getNumberArg, getStringArg } from "./args.js";
 import { oracleAscSign, oraclePlanetLongitude, oraclePlanetSign } from "../engine.js";
+import {
+  EPOCH_PG_MS,
+  makeUtcDate,
+  minuteSincePg,
+  parseReturnArray,
+  runCairoBatch,
+  runCairoPointMismatchDetail,
+  runScarb,
+} from "./lib/eval-core.js";
+import {
+  makeStructuredMismatchRow,
+  makeWindowSummaryRow,
+} from "./lib/eval-rows.js";
 
 const ENGINE_CONFIG = {
   v5: { id: 5, startYear: 1, endYear: 4000 },
@@ -17,30 +28,11 @@ const CLI_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(CLI_DIR, "..", "..", "..");
 const CAIRO_DIR = path.join(REPO_ROOT, "cairo");
 
-function runScarb(args, cwd) {
-  const scarbBin = process.env.SCARB_BIN || "scarb";
-  return execFileSync(scarbBin, args.map(String), {
-    cwd,
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-}
-
-function makeUtcDate(year, month, day) {
-  const dt = new Date(Date.UTC(0, month - 1, day, 0, 0, 0));
-  dt.setUTCFullYear(year);
-  return dt;
-}
-
-const EPOCH_PG_MS = makeUtcDate(1, 1, 1).getTime();
-
-function minuteSincePg(unixMs) {
-  return Math.floor((unixMs - EPOCH_PG_MS) / 60_000);
-}
-
 function buildBatchPayload({
   batchStartYear,
   batchEndYear,
+  runStartYear = batchStartYear,
+  runEndYear = batchEndYear,
   months,
   locations,
   computeExpectedSignsForPointFn = computeExpectedSignsForPoint,
@@ -71,6 +63,10 @@ function buildBatchPayload({
           signs[7],
         );
         batchMeta.push({
+          runStartYear,
+          runEndYear,
+          batchStartYear,
+          batchEndYear,
           year,
           month,
           location: loc.name,
@@ -100,92 +96,6 @@ function computeExpectedSignsForPoint(unixMs, latBin, lonBin) {
   return [...planetSigns, asc];
 }
 
-function parseReturnArray(rawOutput) {
-  const marker = "returning";
-  const idx = rawOutput.lastIndexOf(marker);
-  if (idx < 0) {
-    throw new Error(`Could not parse cairo-run output: missing '${marker}' marker`);
-  }
-  const start = rawOutput.indexOf("[", idx);
-  const end = rawOutput.lastIndexOf("]");
-  if (start < 0 || end < 0 || end < start) {
-    throw new Error("Could not parse cairo-run output array");
-  }
-  return JSON.parse(rawOutput.slice(start, end + 1));
-}
-
-function runCairoBatch({ engineId, packedPoints, expectedPacked, noBuild }) {
-  const argsPayload = [engineId, packedPoints, expectedPacked];
-  const tmpPath = path.join(os.tmpdir(), `eval_batch_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}.json`);
-  fs.writeFileSync(tmpPath, `${JSON.stringify(argsPayload)}\n`, "utf8");
-
-  try {
-    const cmdArgs = [
-      "cairo-run",
-      "-p",
-      "astronomy_engine_eval_runner",
-      "--function",
-      "eval_batch_fail_breakdown",
-      "--arguments-file",
-      tmpPath,
-    ];
-    if (noBuild) cmdArgs.push("--no-build");
-
-    const out = runScarb(cmdArgs, CAIRO_DIR);
-    const values = parseReturnArray(out).map((x) => Number(x));
-    if (values.length !== 10) {
-      throw new Error(`Unexpected cairo-run return shape: expected 10 values, got ${values.length}`);
-    }
-    return {
-      failCount: values[0],
-      planetFailCount: values[1],
-      ascFailCount: values[2],
-      sunFailCount: values[3],
-      moonFailCount: values[4],
-      mercuryFailCount: values[5],
-      venusFailCount: values[6],
-      marsFailCount: values[7],
-      jupiterFailCount: values[8],
-      saturnFailCount: values[9],
-    };
-  } finally {
-    fs.rmSync(tmpPath, { force: true });
-  }
-}
-
-function runCairoPointMismatchDetail({
-  engineId, minutePg, latBin, lonBin, expectedSigns, noBuild,
-}) {
-  const argsPayload = [engineId, minutePg, latBin, lonBin, expectedSigns];
-  const tmpPath = path.join(os.tmpdir(), `eval_point_detail_${Date.now()}_${Math.floor(Math.random() * 1_000_000)}.json`);
-  fs.writeFileSync(tmpPath, `${JSON.stringify(argsPayload)}\n`, "utf8");
-
-  try {
-    const cmdArgs = [
-      "cairo-run",
-      "-p",
-      "astronomy_engine_eval_runner",
-      "--function",
-      "eval_point_mismatch_detail",
-      "--arguments-file",
-      tmpPath,
-    ];
-    if (noBuild) cmdArgs.push("--no-build");
-    const out = runScarb(cmdArgs, CAIRO_DIR);
-    const values = parseReturnArray(out).map((x) => Number(x));
-    if (values.length !== 16) {
-      throw new Error(`Unexpected point detail return shape: expected 16 values, got ${values.length}`);
-    }
-    return {
-      mask: values[0],
-      actualSigns: values.slice(1, 9),
-      actualLongitudes1e9: values.slice(9, 16),
-    };
-  } finally {
-    fs.rmSync(tmpPath, { force: true });
-  }
-}
-
 function sliceBatchPayload(pointData, expectedData, startPointIdx, endPointIdxExclusive) {
   const pointStart = startPointIdx * 3;
   const pointEnd = endPointIdxExclusive * 3;
@@ -201,6 +111,8 @@ function collectMismatchRowsForBatch({
   engineId,
   engine,
   profile,
+  locationSet,
+  monthsPerYear,
   batchMeta,
   batchPointData,
   batchExpected,
@@ -231,6 +143,7 @@ function collectMismatchRowsForBatch({
       packedPoints: pointSlice,
       expectedPacked: expectedSlice,
       noBuild,
+      cairoDir: CAIRO_DIR,
     });
     subsetBatchCalls += 1;
     breakdownCache.set(key, result);
@@ -255,6 +168,7 @@ function collectMismatchRowsForBatch({
         lonBin: meta.lonBin,
         expectedSigns,
         noBuild,
+        cairoDir: CAIRO_DIR,
       });
       pointMaskCalls += 1;
       const mask = detail.mask;
@@ -281,10 +195,18 @@ function collectMismatchRowsForBatch({
           oraclePlanetLongitudeFn("Jupiter", pointUnixMs),
           oraclePlanetLongitudeFn("Saturn", pointUnixMs),
         ];
-        mismatchRows.push(JSON.stringify({
+        mismatchRows.push(JSON.stringify(makeStructuredMismatchRow({
           tsUtc: new Date().toISOString(),
           engine,
           profile,
+          locationSet,
+          monthsPerYear,
+          runStartYear: meta.runStartYear,
+          runEndYear: meta.runEndYear,
+          batchStartYear: meta.batchStartYear,
+          batchEndYear: meta.batchEndYear,
+          batchPointCount: batchMeta.length,
+          pointIndex: idx,
           year: meta.year,
           month: meta.month,
           location: meta.location,
@@ -296,9 +218,7 @@ function collectMismatchRowsForBatch({
           actualLongitudes1e9: detail.actualLongitudes1e9,
           oracleLongitudesDeg,
           mismatchMask: mask,
-          planetMismatch: (mask & 0x7f) !== 0,
-          ascMismatch: (mask & 0x80) !== 0,
-        }));
+        })));
       }
       return;
     }
@@ -320,6 +240,10 @@ function formatDuration(ms) {
   if (h > 0) return `${h}h ${m}m ${s}s`;
   if (m > 0) return `${m}m ${s}s`;
   return `${s}s`;
+}
+
+function locationSetId(locations) {
+  return locations.map((loc) => loc.name).join("+");
 }
 
 function main() {
@@ -358,6 +282,7 @@ function main() {
   const startYear = getNumberArg(args, "start-year", capability.startYear);
   const endYear = getNumberArg(args, "end-year", capability.endYear);
   const locations = profile === "heavy" ? [NYC, ALEXANDRIA] : [NYC];
+  const locationSet = locationSetId(locations);
   const months = profile === "heavy" ? 12 : 1;
   const pointsPerYear = months * locations.length;
   const requestedPointsPerBatch = batchYears * pointsPerYear;
@@ -413,6 +338,8 @@ function main() {
     const { batchPointData, batchExpected, batchMeta, batchPointCount } = buildBatchPayload({
       batchStartYear,
       batchEndYear,
+      runStartYear: startYear,
+      runEndYear: endYear,
       months,
       locations,
     });
@@ -422,6 +349,7 @@ function main() {
       packedPoints: batchPointData,
       expectedPacked: batchExpected,
       noBuild: true,
+      cairoDir: CAIRO_DIR,
     });
     if (
       !Number.isInteger(batchResult.failCount) ||
@@ -477,6 +405,8 @@ function main() {
         engineId: capability.id,
         engine,
         profile,
+        locationSet,
+        monthsPerYear: months,
         batchMeta,
         batchPointData,
         batchExpected,
@@ -506,12 +436,18 @@ function main() {
     const elapsedMs = Date.now() - runStart;
     const batchPassCount = batchPointCount - batchFailCount;
 
-    emit({
+    emit(makeWindowSummaryRow({
       tsUtc: new Date().toISOString(),
       engine,
       profile,
+      locationSet,
+      monthsPerYear: months,
+      batchYears,
+      runStartYear: startYear,
+      runEndYear: endYear,
       yearStart: batchStartYear,
       yearEnd: batchEndYear,
+      pointCount: batchPointCount,
       passCount: batchPassCount,
       failCount: batchFailCount,
       planetFailCount: batchPlanetFailCount,
@@ -524,7 +460,7 @@ function main() {
       jupiterFailCount: batchJupiterFailCount,
       saturnFailCount: batchSaturnFailCount,
       elapsedMs,
-    });
+    }));
 
     if (processedBatches % logEveryChunks === 0 || processedYears === totalYears) {
       const progress = totalYears > 0 ? processedYears / totalYears : 1;
