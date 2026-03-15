@@ -21,26 +21,26 @@ pub fn eval_batch_fail_count(engine_id: u8, point_data: Array<i64>, expected_sig
     assert(point_len % 3 == 0, 'points % 3 != 0');
     assert(expected_signs.len() == (point_len / 3) * 8, 'expected len mismatch');
 
-    let point_span = point_data.span();
-    let expected_span = expected_signs.span();
+    let mut point_span = point_data.span();
+    let mut expected_span = expected_signs.span();
     let mut fail_count: u32 = 0;
-    let mut expected_base: usize = 0;
+    let point_count = point_len / 3;
 
-    let mut i: usize = 0;
-    while i < point_len {
-        let minute_pg = *point_span.at(i);
-        let lat_bin_raw = *point_span.at(i + 1);
-        let lon_bin_raw = *point_span.at(i + 2);
+    let mut point_idx: usize = 0;
+    while point_idx != point_count {
+        let minute_pg = *point_span.pop_front().unwrap();
+        let lat_bin_raw = *point_span.pop_front().unwrap();
+        let lon_bin_raw = *point_span.pop_front().unwrap();
         let lat_bin: i16 = lat_bin_raw.try_into().unwrap();
         let lon_bin: i16 = lon_bin_raw.try_into().unwrap();
 
         let signs = compute_engine_signs_pg(engine_id, minute_pg, lat_bin, lon_bin);
-        let sign_span = signs.span();
+        let mut sign_span = signs.span();
 
         let mut all_match = true;
         let mut j: usize = 0;
-        while j < 8 {
-            if *sign_span.at(j) != *expected_span.at(expected_base + j) {
+        while j != 8 {
+            if *sign_span.pop_front().unwrap() != *expected_span.pop_front().unwrap() {
                 all_match = false;
             }
             j += 1;
@@ -49,8 +49,7 @@ pub fn eval_batch_fail_count(engine_id: u8, point_data: Array<i64>, expected_sig
             fail_count += 1;
         }
 
-        i += 3;
-        expected_base += 8;
+        point_idx += 1;
     };
 
     fail_count
@@ -71,8 +70,8 @@ pub fn eval_batch_fail_breakdown(
     assert(point_len % 3 == 0, 'points % 3 != 0');
     assert(expected_signs.len() == (point_len / 3) * 8, 'expected len mismatch');
 
-    let point_span = point_data.span();
-    let expected_span = expected_signs.span();
+    let mut point_span = point_data.span();
+    let mut expected_span = expected_signs.span();
     let mut chart_fail_count: u32 = 0;
     let mut planet_fail_count: u32 = 0;
     let mut asc_fail_count: u32 = 0;
@@ -83,25 +82,25 @@ pub fn eval_batch_fail_breakdown(
     let mut mars_fail_count: u32 = 0;
     let mut jupiter_fail_count: u32 = 0;
     let mut saturn_fail_count: u32 = 0;
-    let mut expected_base: usize = 0;
+    let point_count = point_len / 3;
 
-    let mut i: usize = 0;
-    while i < point_len {
-        let minute_pg = *point_span.at(i);
-        let lat_bin_raw = *point_span.at(i + 1);
-        let lon_bin_raw = *point_span.at(i + 2);
+    let mut point_idx: usize = 0;
+    while point_idx != point_count {
+        let minute_pg = *point_span.pop_front().unwrap();
+        let lat_bin_raw = *point_span.pop_front().unwrap();
+        let lon_bin_raw = *point_span.pop_front().unwrap();
         let lat_bin: i16 = lat_bin_raw.try_into().unwrap();
         let lon_bin: i16 = lon_bin_raw.try_into().unwrap();
 
         let signs = compute_engine_signs_pg(engine_id, minute_pg, lat_bin, lon_bin);
-        let sign_span = signs.span();
+        let mut sign_span = signs.span();
 
         let mut any_mismatch = false;
         let mut planet_mismatch = false;
         let mut asc_mismatch = false;
         let mut j: usize = 0;
-        while j < 8 {
-            if *sign_span.at(j) != *expected_span.at(expected_base + j) {
+        while j != 8 {
+            if *sign_span.pop_front().unwrap() != *expected_span.pop_front().unwrap() {
                 any_mismatch = true;
                 if j == 7 {
                     asc_mismatch = true;
@@ -137,8 +136,7 @@ pub fn eval_batch_fail_breakdown(
             asc_fail_count += 1;
         }
 
-        i += 3;
-        expected_base += 8;
+        point_idx += 1;
     };
 
     (

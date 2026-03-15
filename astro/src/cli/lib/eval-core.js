@@ -3,8 +3,64 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
+let resolvedScarbBin = null;
+
+function compareVersionLike(a, b) {
+  const aParts = a.split(".").map((part) => Number.parseInt(part, 10));
+  const bParts = b.split(".").map((part) => Number.parseInt(part, 10));
+  const len = Math.max(aParts.length, bParts.length);
+  for (let i = 0; i < len; i += 1) {
+    const av = Number.isFinite(aParts[i]) ? aParts[i] : 0;
+    const bv = Number.isFinite(bParts[i]) ? bParts[i] : 0;
+    if (av !== bv) return av - bv;
+  }
+  return 0;
+}
+
+function resolveScarbBin() {
+  if (resolvedScarbBin) return resolvedScarbBin;
+  if (process.env.SCARB_BIN) {
+    resolvedScarbBin = process.env.SCARB_BIN;
+    return resolvedScarbBin;
+  }
+
+  try {
+    const asdfScarb = execFileSync("/opt/homebrew/bin/asdf", ["which", "scarb"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    if (asdfScarb.length > 0 && fs.existsSync(asdfScarb)) {
+      resolvedScarbBin = asdfScarb;
+      return resolvedScarbBin;
+    }
+  } catch {
+    // Fall back to other resolution strategies below.
+  }
+
+  const homeDir = process.env.HOME;
+  if (homeDir) {
+    const installsDir = path.join(homeDir, ".asdf", "installs", "scarb");
+    if (fs.existsSync(installsDir)) {
+      const versions = fs.readdirSync(installsDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort(compareVersionLike);
+      for (let i = versions.length - 1; i >= 0; i -= 1) {
+        const candidate = path.join(installsDir, versions[i], "bin", "scarb");
+        if (fs.existsSync(candidate)) {
+          resolvedScarbBin = candidate;
+          return resolvedScarbBin;
+        }
+      }
+    }
+  }
+
+  resolvedScarbBin = "scarb";
+  return resolvedScarbBin;
+}
+
 export function runScarb(args, cwd) {
-  const scarbBin = process.env.SCARB_BIN || "scarb";
+  const scarbBin = resolveScarbBin();
   return execFileSync(scarbBin, args.map(String), {
     cwd,
     encoding: "utf8",
